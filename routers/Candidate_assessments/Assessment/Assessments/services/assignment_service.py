@@ -1,9 +1,60 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, func
 from schema.assignment import AssignmentCreate
-from model.models import Assignment, Assessment, LegacyCandidate, User, Job, Application, Candidate
+from model.models import Assignment, Assessment, LegacyCandidate, User, Job, Application, Candidate, CandidateRecord
 from sqlmodel import select
 from typing import List, Dict, Any, Optional
+
+
+def _normalize_email(email: Optional[str]) -> Optional[str]:
+    if not email:
+        return None
+    normalized = email.strip().lower()
+    return normalized or None
+
+
+def _get_recruiter_candidate_record_ids(db: Session, user: User) -> List[int]:
+    """
+    Resolve candidate_records IDs owned by a recruiter through job applications.
+    Assignments in this module are created using candidate_records.id from resume endpoints.
+    """
+    job_ids = [row[0] for row in db.execute(select(Job.id).where(Job.recruiter_id == user.id)).all()]
+    if not job_ids:
+        return []
+
+    applications = db.execute(select(Application).where(Application.job_id.in_(job_ids))).scalars().all()
+    if not applications:
+        return []
+
+    candidate_emails = set()
+    app_candidate_ids = {app.candidate_id for app in applications if app.candidate_id}
+
+    for app in applications:
+        normalized = _normalize_email(app.candidate_email)
+        if normalized:
+            candidate_emails.add(normalized)
+
+    if app_candidate_ids:
+        candidate_rows = db.execute(
+            select(Candidate.email).where(Candidate.id.in_(list(app_candidate_ids)))
+        ).all()
+        for row in candidate_rows:
+            normalized = _normalize_email(row[0] if row else None)
+            if normalized:
+                candidate_emails.add(normalized)
+
+    if not candidate_emails:
+        return []
+
+    candidate_record_ids = [
+        row[0]
+        for row in db.execute(
+            select(CandidateRecord.id).where(
+                func.lower(func.trim(CandidateRecord.candidate_email)).in_(list(candidate_emails))
+            )
+        ).all()
+    ]
+    return sorted(list(set(candidate_record_ids)))
 
 def create_assignment(db: Session, data: AssignmentCreate, user: Optional[User] = None):
     assignment = Assignment(**data.dict())
@@ -17,23 +68,10 @@ def get_assignments(db: Session, user: Optional[User] = None):
     
     # Filter by recruiter if user is provided and not admin
     if user and user.role.lower() != "admin":
-        # Get all job IDs for this recruiter
-        job_ids = list(db.exec(select(Job.id).where(Job.recruiter_id == user.id)).all())
-        
-        if job_ids:
-            # Get all applications for these jobs
-            applications = db.exec(select(Application).where(Application.job_id.in_(job_ids))).all()
-            candidate_ids = list(set([app.candidate_id for app in applications if app.candidate_id]))
-            
-            if candidate_ids:
-                # Filter assignments by candidate IDs
-                query = query.filter(Assignment.candidate_id.in_(candidate_ids))
-            else:
-                # No candidates for this recruiter, return empty
-                return []
-        else:
-            # No jobs for this recruiter, return empty
+        candidate_record_ids = _get_recruiter_candidate_record_ids(db, user)
+        if not candidate_record_ids:
             return []
+        query = query.filter(Assignment.candidate_id.in_(candidate_record_ids))
     
     return query.all()
 
@@ -46,12 +84,9 @@ def get_assignments_with_completion_status(db: Session, user: Optional[User] = N
     assignments = get_assignments(db, user)
     
     # Get recruiter's candidate IDs for filtering results
-    recruiter_candidate_ids = set()
+    recruiter_candidate_record_ids = set()
     if user and user.role.lower() != "admin":
-        job_ids = list(db.exec(select(Job.id).where(Job.recruiter_id == user.id)).all())
-        if job_ids:
-            applications = db.exec(select(Application).where(Application.job_id.in_(job_ids))).all()
-            recruiter_candidate_ids = set([app.candidate_id for app in applications if app.candidate_id])
+        recruiter_candidate_record_ids = set(_get_recruiter_candidate_record_ids(db, user))
     result = []
     
     # Track which candidate-email combinations we've already processed
@@ -197,9 +232,9 @@ def get_assignments_with_completion_status(db: Session, user: Optional[User] = N
                 existing_combinations.add((assignment_dict["candidate_id"], assignment_dict["assessment_id"]))
         
         # Get all unique candidate emails from candidate_records (filtered by recruiter if needed)
-        if user and user.role.lower() != "admin" and recruiter_candidate_ids:
+        if user and user.role.lower() != "admin" and recruiter_candidate_record_ids:
             # Filter candidates by recruiter's candidate IDs using IN clause
-            candidate_ids_list = list(recruiter_candidate_ids)
+            candidate_ids_list = list(recruiter_candidate_record_ids)
             if candidate_ids_list:
                 placeholders = ','.join([':id' + str(i) for i in range(len(candidate_ids_list))])
                 params = {f'id{i}': cid for i, cid in enumerate(candidate_ids_list)}
