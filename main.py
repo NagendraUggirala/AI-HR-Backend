@@ -108,6 +108,17 @@ from routers.Forms_Workflows import custom_form_builder, workflow_engine, reques
 from routers.candidates.auth import router as candidate_auth_router
 from super_admin import roles_permissions, multi_tenant, company_settings_admin
 
+from routers.Reports import (
+    employee_router,
+    attendance_router,
+    leave_router,
+    payroll_router,
+    compliance_router,
+    custom_router,
+    dashboard_router,
+    ai_insights_router,
+)
+
 
 # CORS
 
@@ -308,6 +319,16 @@ app.include_router(candidate_auth_router, prefix="/api/candidate", tags=["Candid
 app.include_router(roles_permissions.router, prefix="/api/super-admin", tags=["Super Admin"])
 app.include_router(multi_tenant.router, prefix="/api/super-admin", tags=["Super Admin"])
 app.include_router(company_settings_admin.router, prefix="/api/super-admin", tags=["Super Admin"])
+
+
+app.include_router(employee_router,    prefix="/api/reports")
+app.include_router(attendance_router,  prefix="/api/reports")
+app.include_router(leave_router,       prefix="/api/reports")
+app.include_router(payroll_router,     prefix="/api/reports")
+app.include_router(compliance_router,  prefix="/api/reports")
+app.include_router(custom_router,      prefix="/api/reports")
+app.include_router(dashboard_router,   prefix="/api/reports")
+app.include_router(ai_insights_router, prefix="/api/reports")
 
  
 
